@@ -20,7 +20,7 @@ Nuogeng::~Nuogeng()
 
 bool Nuogeng::openSerial(const std::string& port,int baudrate)
 {
-	m_serial_port = new serial::Serial(port,baudrate,serial::Timeout::simpleTimeout(10)); 
+	m_serial_port = new serial::Serial(port,baudrate,serial::Timeout::simpleTimeout(10)); //port-对应的是哪一个端口
 
 	if (!m_serial_port->isOpen())
 	{
@@ -54,17 +54,18 @@ bool Nuogeng::init()
 	ros::NodeHandle nh;
 	ros::NodeHandle nh_private("~");
 	
-	m_pub_id20 = nh.advertise<gps_msgs::Inspvax>(nh_private.param<std::string>("gps_topic","/gps"),1);
+	m_pub_id20 = nh.advertise<gps_msgs::Inspvax>(nh_private.param<std::string>("gps_topic","/gps"),1);//话题名为gps_topic
 	m_pub_ll2utm = nh.advertise<nav_msgs::Odometry>(nh_private.param<std::string>("odom_topic","/odom"),1);
 	
+	//私有节点获取参数                  坐标系参数名           存储变量        默认值
 	nh_private.param<std::string>("parent_frame_id", m_parent_frame_id, "world");
 	nh_private.param<std::string>("child_frame_id", m_child_frame_id, "gps");
 	
 	nh_private.param<bool>("pub_odom", m_is_pub_ll2utm, false);
 	nh_private.param<bool>("pub_tf", m_is_pub_tf, true);
 	
-	std::string port_name = nh_private.param<std::string>("port_name","/dev/ttyUSB0");
-	int baudrate = nh_private.param<int>("baudrate",115200);
+	std::string port_name = nh_private.param<std::string>("port_name","/dev/ttyUSB0");//查询参数名为port_name的值，没有的话返回/dev/ttyUSB0
+	int baudrate = nh_private.param<int>("baudrate",115200);//查询参数名为baudrate的值，没有查询到的话返回115200
 	if(!openSerial(port_name,baudrate))
 		return false;
 	return true;
@@ -83,9 +84,11 @@ void Nuogeng::readSerialThread()
 	
 	const int read_size = 200;
 	const int buffer_size = read_size * 2;
-	const int left_reserve_len = 5;
-	uint8_t * const raw_data_buf = new uint8_t[buffer_size+left_reserve_len];
-	uint8_t * const buffer =  raw_data_buf+ left_reserve_len;
+	const int left_reserve_len = 5;//数据头占用5个字节
+	//存储区数据的缓存
+	uint8_t * const raw_data_buf = new uint8_t[buffer_size+left_reserve_len];//动态分配整型数组的定义：new int[数组大小]，返回值是指定类型的指针
+	//所要读取数据的缓存数组
+	uint8_t * const buffer =  raw_data_buf+ left_reserve_len;//指针raw_data_buf向后移动了left_reserve_len个元素，进入pkg20
 	
 	size_t offset = 0, get_len, total_len;
 		   
@@ -93,75 +96,77 @@ void Nuogeng::readSerialThread()
 	{
 		try
 		{
-			get_len = m_serial_port->read(buffer+offset,read_size);
+			get_len = m_serial_port->read(buffer+offset,read_size);//将大小为read_size的数据读到buffer数组中
 		}
 		catch(std::exception &e)
 		{
 			ROS_ERROR("Error reading from serial port: %s",e.what());
 		}
 		
-		total_len = offset + get_len;
-		if(total_len < read_size)
-			offset = total_len;
+		total_len = offset + get_len;//offset就是上次已读的数据
+		if(total_len < read_size)//只有当读取的数据大于200个字节的时候才会提交解析
+			offset = total_len;//否则，通过指针偏移接着读取上次未读完的数据
 		else
 		{
 			//cout << total_len << endl;
-			parseIncomingData(buffer, total_len);
-			offset = 0;
+			parseIncomingData(buffer, total_len);//buffer是指向pkg20首地址的整型数组
+			offset = 0;//本次读取的数据完成，置为0
 		}
-		boost::this_thread::sleep(boost::posix_time::milliseconds(10));
+		boost::this_thread::sleep(boost::posix_time::milliseconds(10));//休眠10ms
 	}
 	
-	delete [] raw_data_buf;
+	delete [] raw_data_buf;//手动删除new出来的在堆区的指针
 }
 
 void Nuogeng::parseIncomingData(uint8_t* buffer,size_t len)
 {
-	static size_t pkg_buffer_index = 0; //数据包缓存定位索引
-	static size_t pkg_len = 0;			//数据包长度
-	static size_t remainded = 0;		//包头(5bytes)搜索完毕后buffer的剩余长度
-										//remainded <=4
+	static size_t pkg_buffer_index = 0; //数据包缓存定位索引，指向m_pkg_buffer的首地址，用来指示m_pkg_buffer已存放数据的个数
+	static size_t pkg_len = 0;			//数据包长度，在找到数据头后执行pkg_len = real_buffer[i+2];即可得到数据包长度
+	static size_t remainded = 0;		//包头(5bytes)搜索完毕后buffer的剩余长度；remainded <=4；有可能未读取的剩余的数据包含包头
+										//防止这一帧数据的丢失，影响稳定性
 	//real_buffer指针位于buffer指针之前
 	//上次搜索剩余的数据位于buffer之前
 	//再次搜索时应从real_buffer开始
-	static uint8_t *real_buffer = buffer - remainded;
+	static uint8_t *real_buffer = buffer - remainded;//buffer指针数组前移remained个字节
 	
-	size_t real_buffer_len = len + remainded;
+	size_t real_buffer_len = len + remainded;//如果有剩余的数据，下次读入时候buffer的真实长度就等于上次剩余的加上再来的
 	remainded = 0; //复位
-	for(size_t i=0; i<real_buffer_len; ++i)
+	for(size_t i=0; i<real_buffer_len; ++i)//i=0表示检索buffer数组的第一个位置
 	{
-		if(pkg_buffer_index ==0) //还未找到数据头
+		if(pkg_buffer_index == 0) //还未找到数据头
 		{
+			//只用来实现找包头，一旦找到，定位索引pkg_buffer_index+1退出当前找包头任务，转入将读到的数据拷贝到m_pkg_buffer
 			if(real_buffer_len-i > 4 ) //剩余数据可能包含数据头(剩余bytes>=数据头bytes)
 			{
-				if(LRC(real_buffer+i+1,4)==real_buffer[i]) //LRC校验查找数据头
+				//real_buffer[i]即为LRC校验值，如果是想要的数据头，满足数据头LRC=LRC(real_buffer+i+1,4),real_buffer+i+1为紧接着LRC的4位
+				if(LRC(real_buffer+i+1,4)==real_buffer[i]) //LRC校验查找数据头，前移一位（LRC,数据ID,数据长度，2个字节CRC校验位）
 				{
 					m_pkg_buffer[pkg_buffer_index++] = real_buffer[i];
 					pkg_len = real_buffer[i+2];
 					//cout << pkg_len << endl;
 				}
 			}
-			else if(remainded ==0) // 剩余数据不足且暂未开始拼接
+			else if(remainded ==0) //剩余数据不足且暂(未开始拼接)
 			{
-				remainded = real_buffer_len-i; //剩余个数
+				remainded = real_buffer_len-i; //剩余个数=真实的数据长度-检索过得数据个数，执行一次即可，并让更新到real_buffer_len
 				//开始拼接，剩余bytes有序放在buffer前面，且保证数据的连续性
-				buffer[i-real_buffer_len] = real_buffer[i];
+				buffer[i-real_buffer_len] = real_buffer[i];//把剩余的数据放在buffer前面
 			}
 			else
 				buffer[i-real_buffer_len] = real_buffer[i]; //继续拼接
 		}
 		//数据头已经找到，根据包长逐个拷贝(不包括最后一个字节)
-		else if(pkg_buffer_index < pkg_len+4)
+		else if(pkg_buffer_index < pkg_len+4)//未拷贝到最后一位
 			m_pkg_buffer[pkg_buffer_index++] = real_buffer[i];
-		else
+		else//只剩这一帧数据的随后一个字节，拷贝下来表示完成这一帧数据的拷贝，接下来需要尾部crc校验
 		{	//拷贝最后一个字节,over
 			m_pkg_buffer[pkg_buffer_index] = real_buffer[i];
 			pkg_buffer_index = 0; //定位索引复位
 			
 			if(m_pkg_buffer[3]+m_pkg_buffer[4]*256 != getCrc16ccittFalseByTable(m_pkg_buffer+5,pkg_len))
-				continue; //校验失败
+				continue; //校验失败，结束本次循环，进行下一次循环，而不终止整个循环的执行
 				
-			if(20==m_pkg_buffer[1]) //ID
+			if(20==m_pkg_buffer[1]) //数据头ID
 				parseId20Pkg(m_pkg_buffer);
 			else if(31 == m_pkg_buffer[1])
 				;//parseId31Pkg(m_pkg_buffer);
@@ -171,7 +176,7 @@ void Nuogeng::parseIncomingData(uint8_t* buffer,size_t len)
 
 void Nuogeng::parseId20Pkg(const uint8_t* buffer)
 {
-	auto gpsPtr = (const pkg20Msgs_t *)buffer;
+	auto gpsPtr = (const pkg20Msgs_t *)buffer;//将buffer强制转换成数据定义的格式
 	
 	m_inspax.header.stamp = ros::Time::now();
 	m_inspax.header.frame_id = "gps";
